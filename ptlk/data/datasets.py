@@ -3,11 +3,14 @@
 import numpy
 import torch
 import torch.utils.data
+import pykitti.utils as pyutils
+import numpy as np
 
 from . import globset
 from . import mesh
 from .. import so3
 from .. import se3
+from .utils import sample_IR2, R_to_angle
 
 
 class ModelNet(globset.Globset):
@@ -130,6 +133,48 @@ class CADset4tracking_fixed_perturbation(torch.utils.data.Dataset):
 
         # p0: template, p1: source, igt: transform matrix from p0 to p1
         return p0, p1, igt
+
+class KITTIVelo(torch.utils.data.Dataset):
+    def __init__(self, velo_files, poses, num_pt, partition):
+        self.velo_files = velo_files
+        self.poses = poses
+        self.sample_np = num_pt
+        self.partition = partition
+        assert len(self.velo_files) == len(self.poses), "Lidar scan and pose does NOT match!"
+
+    def __len__(self):
+        return len(self.velo_files) - 1 # last pose change not counted
+
+    def __getitem__(self, index):
+        velo_p = pyutils.load_velo_scan(self.velo_files[index])
+        velo_n = pyutils.load_velo_scan(self.velo_files[index + 1])
+        pose_p = self.poses[index]
+        pose_n = self.poses[index + 1]
+        rel_pose_T = se3.rel_pose(pose_p, pose_n)
+
+        # downsample velo_pts
+        p_si = sample_IR2(velo_p, self.sample_np)
+        n_si = sample_IR2(velo_n, self.sample_np)
+
+        rel_pose = R_to_angle(rel_pose_T[:3,:], to_6=True)
+
+        return velo_p[p_si], velo_n[n_si], rel_pose
+
+    def split(self):
+        """ dateset -> dataset1, dataset2. s.t.
+            len(dataset1) = partition * len(dataset),
+            len(dataset2) = (1-partition) * len(dataset)
+        """
+        orig_size = len(self)
+        select_size = int(orig_size * self.partition)
+        unselect_size = orig_size - select_size
+
+        d1_ids = np.random.choice(orig_size, select_size, replace=False)
+        d2_ids = [i for i in range(orig_size) if i not in d1_ids]
+        dataset1 = KITTIVelo(self.velo_files[d1_ids], self.poses[d1_ids], self.sample_np, self.partition)
+        dataset2 = KITTIVelo(self.velo_files[d2_ids], self.poses[d2_ids], self.sample_np, self.partition)
+
+        return dataset1, dataset2
 
 
 

@@ -1,5 +1,6 @@
 """ 3-d rigid body transfomation group and corresponding Lie algebra. """
 import torch
+import numpy as np
 from .sinc import sinc1, sinc2, sinc3
 from . import so3
 
@@ -20,6 +21,8 @@ def twist_prod(x, y):
 def liebracket(x, y):
     return twist_prod(x, y)
 
+def rel_pose(src, tar):
+    return np.matmul(np.linalg.inv(src), tar)
 
 def mat(x):
     # size: [*, 6] -> [*, 4, 4]

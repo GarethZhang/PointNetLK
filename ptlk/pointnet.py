@@ -100,6 +100,8 @@ class PointNet_features(torch.nn.Module):
         mlp_h1 = [int(64/scale), int(64/scale)]
         mlp_h2 = [int(64/scale), int(128/scale), int(dim_k/scale)]
 
+        self.ret_global = False
+
         self.h1 = MLPNet(3, mlp_h1, b_shared=True).layers
         self.h2 = MLPNet(mlp_h1[-1], mlp_h2, b_shared=True).layers
         #self.sy = torch.nn.Sequential(torch.nn.MaxPool1d(num_points), Flatten())
@@ -131,12 +133,13 @@ class PointNet_features(torch.nn.Module):
         #x = flatten(torch.nn.functional.max_pool1d(x, x.size(-1)))
         x = flatten(self.sy(x))
 
-        #if self.ret_global:
+        # if self.ret_global:
         #    pass
-        #else:
+        # else:
         #    # local + global
         #    l0 = self.t_out_h1 # [B, 64, N]
         #    g0 = x # [B, K]
+        #    num_points = points.shape[2]
         #    x = torch.cat((l0, g0.unsqueeze(2).repeat(1, 1, num_points)), dim=1)
 
         return x
@@ -153,6 +156,43 @@ class PointNet_classifier(torch.nn.Module):
     def forward(self, points):
         feat = self.features(points)
         out = self.classifier(feat)
+        return out
+
+    def loss(self, out, target, w=0.001):
+        loss_c = torch.nn.functional.nll_loss(
+            torch.nn.functional.log_softmax(out, dim=1), target, size_average=False)
+
+        t2 = self.features.t_out_t2
+        if (t2 is None) or (w == 0):
+            return loss_c
+
+        batch = t2.size(0)
+        K = t2.size(1)  # [B, K, K]
+        I = torch.eye(K).repeat(batch, 1, 1).to(t2)
+        A = t2.bmm(t2.transpose(1, 2))
+        loss_m = torch.nn.functional.mse_loss(A, I, size_average=False)
+        loss = loss_c + w * loss_m
+        return loss
+
+class PointNet_pose_regressor(torch.nn.Module):
+    def __init__(self, dof, ptfeat1, ptfeat2, dim_k):
+        super().__init__()
+        self.dof = dof
+        self.features1 = ptfeat1
+        self.features2 = ptfeat2
+        list_layers = mlp_layers(dim_k, [512, 256], b_shared=False, bn_momentum=0.1, dropout=0.0)
+        #list_layers = mlp_layers(dim_k, [512, 256], b_shared=False, bn_momentum=0.1, dropout=0.3)
+        # list_layers.append(torch.nn.Linear(256, dof))
+        self.classifier = torch.nn.Sequential(*list_layers)
+        self.pose_regressor = torch.nn.Sequential(torch.nn.Linear(256, self.dof))
+
+    def forward(self, points1, points2):
+        feat1 = self.features1(points1)
+        feat2 = self.features1(points2)
+        out1 = self.classifier(feat1)
+        out2 = self.classifier(feat2)
+        diff = out1 - out2
+        out = self.pose_regressor(diff)
         return out
 
     def loss(self, out, target, w=0.001):
